@@ -1156,7 +1156,7 @@ app.get("/user/:user_id/stats", async (req, res) => {
         game_session_id,
         COUNT(*) as questions_answered,
         SUM(points_earned) as session_score,
-        SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END) as correct_answers,
+        SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) as correct_answers,
         MAX(answered_at) as last_answered
       FROM answers 
       WHERE user_id = ?
@@ -2005,6 +2005,70 @@ io.on("connection", (socket) => {
         ? questions[currentIndex]
         : null,
   });
+
+  // Send crossword game if active
+  if (crosswordGameActive && crosswordGrid && crosswordPlacedWords) {
+    console.log(`📤 Sending active crossword game to ${socket.id}`);
+    
+    // Transform data for frontend compatibility
+    const gridArray = crosswordGrid.map(row => 
+      row.map(cell => {
+        if (cell.isBlack) return '#';
+        return cell.letter || '.';
+      })
+    );
+    
+    const cellNumbers = {};
+    crosswordGrid.forEach((row, rIdx) => {
+      row.forEach((cell, cIdx) => {
+        if (cell.number && cell.number > 0) {
+          cellNumbers[`${rIdx}-${cIdx}`] = cell.number;
+        }
+      });
+    });
+    
+    const acrossClues = crosswordPlacedWords
+      .filter(w => w.direction === 'across')
+      .map(w => ({
+        number: w.number,
+        clue: w.clue,
+        answer: w.word,
+        startRow: w.startRow,
+        startCol: w.startCol,
+        length: w.length,
+        direction: 'across'
+      }));
+    
+    const downClues = crosswordPlacedWords
+      .filter(w => w.direction === 'down')
+      .map(w => ({
+        number: w.number,
+        clue: w.clue,
+        answer: w.word,
+        startRow: w.startRow,
+        startCol: w.startCol,
+        length: w.length,
+        direction: 'down'
+      }));
+    
+    // Emit in new format
+    socket.emit("crosswordGameStarted", {
+      sessionId: crosswordGameSessionId,
+      grid: gridArray,
+      words: crosswordPlacedWords,
+      totalWords: crosswordPlacedWords.length,
+      gridSize: crosswordGrid.length,
+    });
+    
+    // Also emit in old format for existing frontend compatibility
+    socket.emit("crosswordGrid", {
+      grid: gridArray,
+      acrossClues,
+      downClues,
+      cellNumbers,
+      clues: [...acrossClues, ...downClues]
+    });
+  }
 
   if (
     isGameActive &&
