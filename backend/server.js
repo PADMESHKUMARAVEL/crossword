@@ -1949,24 +1949,83 @@ app.post("/crossword/start-game", async (req, res) => {
 
     console.log(`✅ Crossword game started. Session: ${crosswordGameSessionId}`);
     console.log(`📊 Placed words: ${gridResult.placedWords.length}`);
+    console.log(`🎮 Grid size: ${gridResult.gridSize}x${gridResult.gridSize}`);
 
-    // Emit crossword grid to all connected clients
+    // Transform grid data for frontend compatibility
+    const gridArray = crosswordGrid.map(row => 
+      row.map(cell => {
+        if (cell.isBlack) return '#';
+        return cell.letter || '.';
+      })
+    );
+    
+    const cellNumbers = {};
+    crosswordGrid.forEach((row, rIdx) => {
+      row.forEach((cell, cIdx) => {
+        if (cell.number && cell.number > 0) {
+          cellNumbers[`${rIdx}-${cIdx}`] = cell.number;
+        }
+      });
+    });
+    
+    const acrossClues = crosswordPlacedWords
+      .filter(w => w.direction === 'across')
+      .map(w => ({
+        number: w.number,
+        clue: w.clue,
+        answer: w.word,
+        startRow: w.startRow,
+        startCol: w.startCol,
+        length: w.length,
+        direction: 'across'
+      }));
+    
+    const downClues = crosswordPlacedWords
+      .filter(w => w.direction === 'down')
+      .map(w => ({
+        number: w.number,
+        clue: w.clue,
+        answer: w.word,
+        startRow: w.startRow,
+        startCol: w.startCol,
+        length: w.length,
+        direction: 'down'
+      }));
+
+    console.log(`✅ Transformed grid: ${gridArray.length}x${gridArray[0].length} cells`);
+    console.log(`✅ Across clues: ${acrossClues.length}, Down clues: ${downClues.length}`);
+
+    // Emit in new format
     io.emit("crosswordGameStarted", {
       sessionId: crosswordGameSessionId,
-      grid: crosswordGrid,
+      grid: gridArray,
       words: crosswordPlacedWords,
       totalWords: crosswordPlacedWords.length,
       gridSize: gridResult.gridSize,
     });
 
+    // Also emit in old format for existing frontend compatibility
+    io.emit("crosswordGrid", {
+      grid: gridArray,
+      acrossClues,
+      downClues,
+      cellNumbers,
+      clues: [...acrossClues, ...downClues]
+    });
+
+    console.log(`📡 Crossword events emitted to all clients`);
+
     res.json({
       success: true,
       message: "Crossword game started successfully",
       sessionId: crosswordGameSessionId,
-      grid: crosswordGrid,
+      grid: gridArray,
       words: crosswordPlacedWords,
       totalWords: crosswordPlacedWords.length,
       gridSize: gridResult.gridSize,
+      acrossClues,
+      downClues,
+      cellNumbers
     });
   } catch (err) {
     console.error("Error starting crossword game:", err);
