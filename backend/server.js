@@ -10,6 +10,7 @@ const fs = require("fs");
 const path = require("path");
 const fetch = require("node-fetch");
 const nodemailer = require("nodemailer");
+const { generateCrosswordGrid, fetchCrosswordQuestions } = require("./crosswordgenerate");
 
 const app = express();
 
@@ -77,6 +78,15 @@ let gameTimer = null;
 let currentQuestionStartTime = null;
 let gameSessionId = null;
 let isGameActive = false;
+
+// ----- Crossword Game State -----
+let crosswordGameActive = false;
+let crosswordGameSessionId = null;
+let crosswordGrid = null;
+let crosswordClues = null;
+let crosswordPlacedWords = null;
+let currentCrosswordQuestions = [];
+let crosswordAnswers = new Map(); // user_id -> { answers: {}, score: 0 }
 
 // ==========================================
 // ----- HELPERS -----
@@ -1753,6 +1763,231 @@ app.post("/admin/cleanup-users", async (req, res) => {
 });
 
 // ==========================================
+// ----- CROSSWORD GAME ENDPOINTS -----
+// ==========================================
+
+// GET: Fetch all crossword questions
+app.get("/crossword/questions", async (req, res) => {
+  try {
+    const questions = await fetchCrosswordQuestions(100);
+    res.json(questions);
+  } catch (err) {
+    console.error("Error fetching crossword questions:", err);
+    res.status(500).json({ error: "Failed to fetch crossword questions" });
+  }
+});
+
+// POST: Add a single crossword question
+app.post("/crossword/questions", async (req, res) => {
+  try {
+    const { question, answer } = req.body;
+    
+    if (!question || !answer) {
+      return res.status(400).json({ error: "Question and answer are required" });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+      const [result] = await connection.query(
+        "INSERT INTO crossword_questions (question, answer, difficulty) VALUES (?, ?, ?)",
+        [question, answer, "Medium"]
+      );
+
+      res.json({
+        id: result.insertId,
+        question,
+        answer,
+        difficulty: "Medium"
+      });
+    } finally {
+      connection.release();
+    }
+  } catch (err) {
+    console.error("Error adding crossword question:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT: Update crossword question
+app.put("/crossword/questions/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { question, answer } = req.body;
+
+    if (!question || !answer) {
+      return res.status(400).json({ error: "Question and answer are required" });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+      await connection.query(
+        "UPDATE crossword_questions SET question = ?, answer = ? WHERE id = ?",
+        [question, answer, id]
+      );
+
+      res.json({ success: true });
+    } finally {
+      connection.release();
+    }
+  } catch (err) {
+    console.error("Error updating crossword question:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE: Remove crossword question
+app.delete("/crossword/questions/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const connection = await pool.getConnection();
+    try {
+      await connection.query("DELETE FROM crossword_questions WHERE id = ?", [id]);
+      res.json({ success: true });
+    } finally {
+      connection.release();
+    }
+  } catch (err) {
+    console.error("Error deleting crossword question:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST: Upload crossword questions via CSV
+app.post("/crossword/questions/upload", upload.single("file"), async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    const results = [];
+    let inserted = 0;
+
+    await connection.beginTransaction();
+
+    const processCSV = () => {
+      return new Promise((resolve, reject) => {
+        fs.createReadStream(req.file.path)
+          .pipe(csv())
+          .on("data", (data) => results.push(data))
+          .on("end", async () => {
+            try {
+              for (const row of results) {
+                const question = row.question || row.Question || row.q;
+                const answer = row.answer || row.Answer || row.a;
+                const difficulty = row.difficulty || row.Difficulty || "Medium";
+
+                if (question && answer) {
+                  await connection.query(
+                    "INSERT INTO crossword_questions (question, answer, difficulty) VALUES (?, ?, ?)",
+                    [question.trim(), answer.trim().toUpperCase(), difficulty.trim()]
+                  );
+                  inserted++;
+                }
+              }
+              await connection.commit();
+              resolve();
+            } catch (err) {
+              await connection.rollback();
+              reject(err);
+            }
+          })
+          .on("error", (error) => reject(error));
+      });
+    };
+
+    await processCSV();
+    
+    // Clean up uploaded file
+    fs.unlink(req.file.path, (err) => {
+      if (err) console.warn("Failed to delete uploaded file:", err);
+    });
+
+    res.json({ success: true, inserted });
+  } catch (err) {
+    console.error("Error uploading crossword questions:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    connection.release();
+  }
+});
+
+// POST: Start crossword game
+app.post("/crossword/start-game", async (req, res) => {
+  try {
+    console.log("🎮 Starting crossword game...");
+
+    const { game_code, questions: providedQuestions } = req.body;
+
+    if (!Array.isArray(providedQuestions) || providedQuestions.length === 0) {
+      console.log("❌ No questions provided");
+      return res.status(400).json({
+        success: false,
+        error: "No crossword questions provided",
+      });
+    }
+
+    // Generate crossword grid
+    console.log(`📝 Generating crossword grid with ${providedQuestions.length} questions...`);
+    const gridResult = generateCrosswordGrid(providedQuestions, 15);
+
+    if (!gridResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: gridResult.error || "Failed to generate crossword grid",
+      });
+    }
+
+    // Store crossword game state
+    crosswordGameActive = true;
+    crosswordGameSessionId = `crossword_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    crosswordGrid = gridResult.gameGrid;
+    crosswordPlacedWords = gridResult.placedWords;
+    currentCrosswordQuestions = providedQuestions;
+    crosswordAnswers.clear();
+
+    console.log(`✅ Crossword game started. Session: ${crosswordGameSessionId}`);
+    console.log(`📊 Placed words: ${gridResult.placedWords.length}`);
+
+    // Emit crossword grid to all connected clients
+    io.emit("crosswordGameStarted", {
+      sessionId: crosswordGameSessionId,
+      grid: crosswordGrid,
+      words: crosswordPlacedWords,
+      totalWords: crosswordPlacedWords.length,
+      gridSize: gridResult.gridSize,
+    });
+
+    res.json({
+      success: true,
+      message: "Crossword game started successfully",
+      sessionId: crosswordGameSessionId,
+      grid: crosswordGrid,
+      words: crosswordPlacedWords,
+      totalWords: crosswordPlacedWords.length,
+      gridSize: gridResult.gridSize,
+    });
+  } catch (err) {
+    console.error("Error starting crossword game:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+
+// GET: Crossword game status
+app.get("/crossword/game-status", (req, res) => {
+  res.json({
+    active: crosswordGameActive,
+    sessionId: crosswordGameSessionId,
+    gridSize: crosswordGrid ? crosswordGrid.length : 0,
+    totalWords: crosswordPlacedWords ? crosswordPlacedWords.length : 0,
+  });
+});
+
+// ==========================================
 // ----- SOCKET.IO -----
 // ==========================================
 
@@ -1978,6 +2213,133 @@ io.on("connection", (socket) => {
     } else {
       socket.emit("gameError", { error: "No questions available" });
     }
+  });
+
+  // ==========================================
+  // ----- CROSSWORD SOCKET EVENTS -----
+  // ==========================================
+
+  socket.on("getCrosswordGame", () => {
+    if (crosswordGameActive && crosswordGrid && crosswordPlacedWords) {
+      console.log(`📤 Sending crossword game to client: ${socket.id}`);
+      socket.emit("crosswordGameStarted", {
+        sessionId: crosswordGameSessionId,
+        grid: crosswordGrid,
+        words: crosswordPlacedWords,
+        totalWords: crosswordPlacedWords.length,
+        gridSize: crosswordGrid.length,
+      });
+    } else {
+      socket.emit("noCrosswordGame", { message: "No active crossword game" });
+    }
+  });
+
+  socket.on("submitCrosswordAnswer", async ({ user_id, email, display_name, answers }) => {
+    try {
+      console.log(`✅ Crossword answers submitted by ${email}`);
+
+      if (!crosswordGameActive) {
+        socket.emit("crosswordError", { error: "No active crossword game" });
+        return;
+      }
+
+      // Store user's answers
+      const userAnswers = crosswordAnswers.get(user_id) || { answers: {}, score: 0 };
+      userAnswers.answers = answers;
+
+      // Calculate score based on correct answers
+      let correctCount = 0;
+      for (const word of crosswordPlacedWords) {
+        const wordAnswer = (answers[word.number] || "").toUpperCase().trim();
+        const correctAnswer = word.word.toUpperCase().trim();
+        
+        if (wordAnswer === correctAnswer) {
+          correctCount++;
+        }
+      }
+
+      userAnswers.score = correctCount;
+      crosswordAnswers.set(user_id, userAnswers);
+
+      const accuracy = crosswordPlacedWords.length > 0 
+        ? ((correctCount / crosswordPlacedWords.length) * 100).toFixed(1)
+        : 0;
+
+      console.log(`📊 ${email}: ${correctCount}/${crosswordPlacedWords.length} correct (${accuracy}%)`);
+
+      // Send result to user
+      socket.emit("crosswordResult", {
+        success: true,
+        correctAnswers: correctCount,
+        totalAnswers: crosswordPlacedWords.length,
+        accuracy: accuracy,
+        score: userAnswers.score,
+      });
+
+      // Broadcast updated leaderboard
+      const leaderboard = Array.from(crosswordAnswers.entries())
+        .map(([uid, data]) => ({
+          user_id: uid,
+          score: data.score,
+          total: crosswordPlacedWords.length,
+          accuracy: crosswordPlacedWords.length > 0 
+            ? ((data.score / crosswordPlacedWords.length) * 100).toFixed(1)
+            : 0,
+        }))
+        .sort((a, b) => b.score - a.score);
+
+      io.emit("crosswordLeaderboard", leaderboard);
+
+      // Optionally record in database
+      if (email && display_name) {
+        const connection = await pool.getConnection();
+        try {
+          // Record crossword game result
+          const [userRes] = await connection.query(
+            "SELECT user_id FROM users WHERE LOWER(email) = LOWER(?)",
+            [email]
+          );
+
+          if (userRes.length > 0) {
+            const userId = userRes[0].user_id;
+            await connection.query(
+              `INSERT INTO crossword_results (user_id, session_id, correct_answers, total_answers, accuracy)
+               VALUES (?, ?, ?, ?, ?)`,
+              [userId, crosswordGameSessionId, correctCount, crosswordPlacedWords.length, accuracy]
+            );
+          }
+        } catch (dbErr) {
+          console.warn("Could not record crossword result to DB:", dbErr.message);
+        } finally {
+          connection.release();
+        }
+      }
+
+    } catch (err) {
+      console.error("Crossword answer submission error:", err);
+      socket.emit("crosswordError", { error: "Error processing crossword answers" });
+    }
+  });
+
+  socket.on("endCrosswordGame", () => {
+    console.log(`🏁 Crossword game ended`);
+    
+    crosswordGameActive = false;
+    crosswordGrid = null;
+    crosswordPlacedWords = null;
+    currentCrosswordQuestions = [];
+    
+    io.emit("crosswordGameEnded", {
+      finalLeaderboard: Array.from(crosswordAnswers.entries())
+        .map(([uid, data]) => ({
+          user_id: uid,
+          score: data.score,
+          total: crosswordPlacedWords ? crosswordPlacedWords.length : 0,
+        }))
+        .sort((a, b) => b.score - a.score),
+    });
+    
+    crosswordAnswers.clear();
   });
 
   socket.on("disconnect", () => {

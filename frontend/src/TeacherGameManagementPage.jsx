@@ -9,7 +9,8 @@ import { formatAccuracy, formatScore } from "./utils/helpers";import {
   fetchCrosswordQuestions as fetchCrosswordQuestionsAPI,
   deleteCrosswordQuestion as deleteCrosswordQuestionAPI,
   fetchCrosswordRanks as fetchCrosswordRanksAPI,
-  downloadCrosswordResults as downloadCrosswordResultsAPI
+  downloadCrosswordResults as downloadCrosswordResultsAPI,
+  startCrosswordGame as startCrosswordGameAPI
 } from "./crosswordteacher";
 
 
@@ -1526,6 +1527,8 @@ function TeacherGameManagementPage() {
       setStarting(true);
 
       if (gameName === "A. Crossword") {
+        console.log("🎮 Starting Crossword game...");
+        
         const questionsRes = await fetch(`${API_BASE}/crossword/questions`);
         const questionsData = await questionsRes.json();
         const crosswordQuestions = Array.isArray(questionsData) 
@@ -1533,26 +1536,18 @@ function TeacherGameManagementPage() {
           : questionsData.questions || [];
 
         if (crosswordQuestions.length === 0) {
-          alert("Add crossword questions before starting the game");
+          alert("❌ Add crossword questions before starting the game");
           setStarting(false);
           return;
         }
 
-        const res = await fetch(`${API_BASE}/crossword/start-game`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 
-            game_code: gameCode,
-            questions: crosswordQuestions
-          }),
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) throw new Error(data.error || "Start failed");
-
-        alert(`✅ ${gameName} started successfully with ${crosswordQuestions.length} questions`);
+        // Use the new startCrosswordGame function
+        const gameResult = await startCrosswordGameAPI(crosswordQuestions);
+        
+        alert(`✅ Crossword game started successfully!\n📊 Grid: ${gameResult.gridSize}x${gameResult.gridSize}\n📝 Words: ${gameResult.totalWords}`);
       } else if (gameName === "Wisdom Warfare") {
+        console.log("🎮 Starting Wisdom Warfare Quiz game...");
+        
         const res = await fetch(`${API_BASE}/admin/start-game`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1566,6 +1561,8 @@ function TeacherGameManagementPage() {
         if (!res.ok) throw new Error(data.error || "Start failed");
         alert(`✅ ${gameName} started successfully`);
       } else {
+        console.log(`🎮 Starting ${gameName} game...`);
+        
         const res = await fetch(`${API_BASE}/admin/start-game`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1580,6 +1577,7 @@ function TeacherGameManagementPage() {
         alert(`✅ ${gameName} started successfully`);
       }
     } catch (e) {
+      console.error(`Failed to start ${gameName}:`, e);
       alert(`❌ Failed to start ${gameName}: ${e.message}`);
     } finally {
       setStarting(false);

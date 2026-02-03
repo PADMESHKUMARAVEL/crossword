@@ -250,6 +250,34 @@ export function ViewCrosswordQuestionsModal({ questions, onClose, onEdit, onDele
    CROSSWORD UTILITY FUNCTIONS
    ---------------------------------------------------- */
 
+export async function startCrosswordGame(questions) {
+  try {
+    if (!Array.isArray(questions) || questions.length === 0) {
+      throw new Error("No crossword questions available");
+    }
+
+    console.log(`🎮 Starting crossword game with ${questions.length} questions`);
+
+    const res = await fetch(`${API_BASE}/crossword/start-game`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ questions }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to start crossword game");
+    }
+
+    console.log("✅ Crossword game started successfully");
+    return data;
+  } catch (error) {
+    console.error("Error starting crossword game:", error);
+    throw error;
+  }
+}
+
 export async function fetchCrosswordQuestions() {
   try {
     const res = await fetch(`${API_BASE}/crossword/questions`);
