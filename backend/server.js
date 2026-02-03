@@ -1955,7 +1955,7 @@ app.post("/crossword/start-game", async (req, res) => {
     const gridArray = crosswordGrid.map(row => 
       row.map(cell => {
         if (cell.isBlack) return '#';
-        return cell.letter || '.';
+        return cell.letter || ' '; // Use space for empty white cells instead of '.'
       })
     );
     
@@ -2073,7 +2073,7 @@ io.on("connection", (socket) => {
     const gridArray = crosswordGrid.map(row => 
       row.map(cell => {
         if (cell.isBlack) return '#';
-        return cell.letter || '.';
+        return cell.letter || ' '; // Use space for empty white cells instead of '.'
       })
     );
     

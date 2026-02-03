@@ -588,20 +588,62 @@ const GameUI = ({ user, onLogout }) => {
     setWordInput('');
   };
 
+  const validateWords = (updatedInputs) => {
+    const clues = crosswordClues.length > 0 ? crosswordClues : 
+                  (crosswordData.clues || []);
+    const newCompletedWords = [];
+
+    clues.forEach(clue => {
+      const clueId = clue.id || clue.clueId || clue.number;
+      if (completedWords.includes(clueId)) {
+        newCompletedWords.push(clueId);
+        return;
+      }
+
+      const { direction, startRow, startCol, length, answer } = clue;
+      let wordValue = '';
+
+      if (direction === 'across' || direction === 'horizontal') {
+        for (let i = 0; i < length; i++) {
+          const cellId = `${startRow}-${startCol + i}`;
+          wordValue += (updatedInputs[cellId] || '');
+        }
+      } else if (direction === 'down' || direction === 'vertical') {
+        for (let i = 0; i < length; i++) {
+          const cellId = `${startRow + i}-${startCol}`;
+          wordValue += (updatedInputs[cellId] || '');
+        }
+      }
+
+      // Check if word is complete and correct
+      if (wordValue.length === length && 
+          wordValue.toUpperCase() === (answer || '').toUpperCase()) {
+        newCompletedWords.push(clueId);
+      }
+    });
+
+    setCompletedWords(newCompletedWords);
+  };
+
   const handleCellInput = (rowIndex, colIndex, value) => {
     const cellId = `${rowIndex}-${colIndex}`;
     const upperValue = value.toUpperCase();
     
-    setCellInputs(prev => ({
-      ...prev,
+    const updatedInputs = {
+      ...cellInputs,
       [cellId]: upperValue
-    }));
+    };
+    
+    setCellInputs(updatedInputs);
+    
+    // Validate words in real-time
+    validateWords(updatedInputs);
     
     // Auto-focus next cell if a letter was entered
     if (upperValue.length > 0) {
       setTimeout(() => {
         const nextInput = document.querySelector(`[data-row="${rowIndex}"][data-col="${colIndex + 1}"]`);
-        if (nextInput) {
+        if (nextInput && !nextInput.disabled) {
           nextInput.focus();
         }
       }, 10);
@@ -767,8 +809,8 @@ const renderCrosswordGrid = () => {
   const downClues = clues.filter(clue => clue.direction === 'down' || clue.direction === 'vertical');
   
   return (
-    <div className="flex flex-col lg:flex-row gap-6">
-      <div className="lg:w-2/3">
+    <div className="flex flex-col gap-6 w-full">
+      <div className="w-full">
         <div className="bg-gray-900 p-4 rounded-xl border-2 border-cyan-600">
           <h3 className="text-xl font-bold text-white mb-4 text-center">
             {gameName || "Crossword Puzzle"}
@@ -789,14 +831,23 @@ const renderCrosswordGrid = () => {
             {grid.map((row, rowIndex) =>
               row.map((cell, colIndex) => {
                 const cellId = `${rowIndex}-${colIndex}`;
-                const isBlack = cell === '#' || cell === null || cell === '.';
+                const isBlack = cell === '#' || cell === null;
                 const cellNumber = cellNumbers && cellNumbers[cellId];
                 const letter = getCellLetter(rowIndex, colIndex);
                 
-                // Check if user has locked this cell
-                const isLockedByMe = Object.entries(lockedWords).some(([wordId, locker]) => 
-                  locker.email === user?.email && isCellInWord(wordId, rowIndex, colIndex, clues)
-                );
+                // Check if this cell is part of a completed word
+                const cellIsCompleted = clues.some(clue => {
+                  const clueId = clue.id || clue.clueId || clue.number;
+                  if (!completedWords.includes(clueId)) return false;
+                  
+                  const { direction, startRow, startCol, length } = clue;
+                  if (direction === 'across' || direction === 'horizontal') {
+                    return rowIndex === startRow && colIndex >= startCol && colIndex < startCol + length;
+                  } else if (direction === 'down' || direction === 'vertical') {
+                    return colIndex === startCol && rowIndex >= startRow && rowIndex < startRow + length;
+                  }
+                  return false;
+                });
                 
                 return (
                   <div
@@ -804,11 +855,13 @@ const renderCrosswordGrid = () => {
                     className={`relative w-10 h-10 flex items-center justify-center font-bold rounded ${
                       isBlack 
                         ? 'bg-black' 
+                        : cellIsCompleted
+                        ? 'bg-green-700 text-white border border-green-900'
                         : 'bg-white text-black border border-gray-300'
                     }`}
                   >
                     {cellNumber && !isBlack && (
-                      <div className="absolute top-0 left-1 text-xs font-bold text-black">
+                      <div className={`absolute top-0 left-1 text-xs font-bold ${cellIsCompleted ? 'text-green-200' : 'text-black'}`}>
                         {cellNumber}
                       </div>
                     )}
@@ -819,22 +872,17 @@ const renderCrosswordGrid = () => {
                         value={letter}
                         onChange={(e) => handleCellInput(rowIndex, colIndex, e.target.value)}
                         onKeyDown={(e) => handleKeyDown(e, rowIndex, colIndex)}
-                        disabled={!isLockedByMe}
                         data-row={rowIndex}
                         data-col={colIndex}
                         className={`w-full h-full text-center uppercase font-bold text-xl ${
-                          isLockedByMe 
-                            ? "bg-white text-black focus:bg-blue-100 focus:ring-2 focus:ring-blue-500" 
-                            : "bg-gray-100 text-gray-400 cursor-not-allowed"
+                          cellIsCompleted 
+                            ? "bg-green-700 text-white focus:bg-green-600 focus:ring-2 focus:ring-green-500" 
+                            : "bg-white text-black focus:bg-blue-50 focus:ring-2 focus:ring-blue-400"
                         }`}
                         maxLength={1}
                         style={{ fontSize: '1.25rem' }}
                       />
                     ) : null}
-                    
-                    {!isBlack && isLockedByMe && (
-                      <div className="absolute bottom-0 right-0 w-2 h-2 bg-blue-500 rounded-full"></div>
-                    )}
                   </div>
                 );
               })
@@ -843,13 +891,13 @@ const renderCrosswordGrid = () => {
         </div>
       </div>
       
-      <div className="lg:w-1/3">
+      <div className="w-full">
         <div className="bg-gray-800 rounded-xl p-4 border-2 border-cyan-600">
           <h3 className="text-xl font-bold text-cyan-400 mb-4">Clues</h3>
           
-          {/* ACROSS Clues */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {acrossClues.length > 0 && (
-            <div className="mb-6">
+            <div>
               <h4 className="text-lg font-bold text-white mb-2">ACROSS</h4>
               <div className="space-y-2 max-h-40 overflow-y-auto">
                 {acrossClues.map((clue) => {
@@ -882,42 +930,6 @@ const renderCrosswordGrid = () => {
                             </div>
                           )}
                         </div>
-                        <div>
-                          {isLockedByMe ? (
-                            <div className="flex flex-col gap-2 w-32">
-                              <input
-                                type="text"
-                                value={wordInput}
-                                onChange={(e) => setWordInput(e.target.value.toUpperCase())}
-                                className="px-2 py-1 bg-gray-900 text-white rounded w-full"
-                                placeholder="Enter answer"
-                                onKeyPress={(e) => e.key === 'Enter' && submitWord(clueId, wordInput)}
-                              />
-                              <button
-                                onClick={() => submitWord(clueId, wordInput)}
-                                className="bg-green-600 hover:bg-green-500 px-3 py-1 rounded text-sm"
-                              >
-                                Submit
-                              </button>
-                            </div>
-                          ) : !isLocked && !isCompleted ? (
-                            <button
-                              onClick={() => lockWord(clueId, 'across')}
-                              className="bg-cyan-600 hover:bg-cyan-500 px-3 py-1 rounded text-sm whitespace-nowrap"
-                            >
-                              Lock Word
-                            </button>
-                          ) : isCompleted ? (
-                            <span className="text-green-400 text-sm font-bold">✓</span>
-                          ) : (
-                            <div className="text-right">
-                              <div className="text-red-400 text-xs">Locked by</div>
-                              <div className="text-red-300 text-sm font-semibold">
-                                {isLocked.display_name || isLocked.email?.split('@')[0]}
-                              </div>
-                            </div>
-                          )}
-                        </div>
                       </div>
                     </div>
                   );
@@ -933,18 +945,13 @@ const renderCrosswordGrid = () => {
               <div className="space-y-2 max-h-40 overflow-y-auto">
                 {downClues.map((clue) => {
                   const clueId = clue.id || clue.clueId || clue.number;
-                  const isLocked = lockedWords[clueId];
                   const isCompleted = completedWords.includes(clueId);
-                  const isLockedByMe = isLocked && isLocked.email === user?.email;
                   
                   return (
                     <div
                       key={clueId}
                       className={`p-3 rounded-lg ${
-                        isCompleted ? 'bg-green-800' :
-                        isLockedByMe ? 'bg-cyan-800' :
-                        isLocked ? 'bg-red-800' :
-                        'bg-gray-700'
+                        isCompleted ? 'bg-green-800' : 'bg-gray-700'
                       }`}
                     >
                       <div className="flex justify-between items-start">
@@ -961,42 +968,6 @@ const renderCrosswordGrid = () => {
                             </div>
                           )}
                         </div>
-                        <div>
-                          {isLockedByMe ? (
-                            <div className="flex flex-col gap-2 w-32">
-                              <input
-                                type="text"
-                                value={wordInput}
-                                onChange={(e) => setWordInput(e.target.value.toUpperCase())}
-                                className="px-2 py-1 bg-gray-900 text-white rounded w-full"
-                                placeholder="Enter answer"
-                                onKeyPress={(e) => e.key === 'Enter' && submitWord(clueId, wordInput)}
-                              />
-                              <button
-                                onClick={() => submitWord(clueId, wordInput)}
-                                className="bg-green-600 hover:bg-green-500 px-3 py-1 rounded text-sm"
-                              >
-                                Submit
-                              </button>
-                            </div>
-                          ) : !isLocked && !isCompleted ? (
-                            <button
-                              onClick={() => lockWord(clueId, 'down')}
-                              className="bg-cyan-600 hover:bg-cyan-500 px-3 py-1 rounded text-sm whitespace-nowrap"
-                            >
-                              Lock Word
-                            </button>
-                          ) : isCompleted ? (
-                            <span className="text-green-400 text-sm font-bold">✓</span>
-                          ) : (
-                            <div className="text-right">
-                              <div className="text-red-400 text-xs">Locked by</div>
-                              <div className="text-red-300 text-sm font-semibold">
-                                {isLocked.display_name || isLocked.email?.split('@')[0]}
-                              </div>
-                            </div>
-                          )}
-                        </div>
                       </div>
                     </div>
                   );
@@ -1010,6 +981,7 @@ const renderCrosswordGrid = () => {
               No clues loaded yet
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>
